@@ -4,52 +4,35 @@
 
 {% block content %}
 <div class="container mt-5">
-    <div class="row g-4">
-        <!-- Test DES/3DES Encryption -->
-        <div class="col-md-4">
+    <div class="row g-4 justify-content-center">
+        <div class="col-md-5">
             <div class="card border-primary">
                 <div class="card-header bg-primary text-white">
-                    <i class="fas fa-lock"></i> Test DES/3DES Encryption
+                    <i class="fas fa-lock"></i> Test AES-256-GCM Encryption
                 </div>
                 <div class="card-body">
-                    <label for="des-text" class="form-label">Dữ liệu test:</label>
-                    <input type="text" class="form-control mb-2" id="des-text" value="Hello World!">
-                    <button class="btn btn-primary w-100 mb-2" onclick="testDES()">
-                        <i class="fas fa-lock"></i> Test DES/3DES
+                    <label for="aes-text" class="form-label">Dữ liệu test:</label>
+                    <input type="text" class="form-control mb-2" id="aes-text" value="Hello Secure World!">
+                    <button class="btn btn-primary w-100 mb-2" onclick="testAES()">
+                        <i class="fas fa-shield-alt"></i> Mã hóa AES-GCM
                     </button>
-                    <div id="des-result"></div>
+                    <div id="aes-result"></div>
                 </div>
             </div>
         </div>
-        <!-- Test RSA Signature -->
-        <div class="col-md-4">
+        
+        <div class="col-md-5">
             <div class="card border-success">
                 <div class="card-header bg-success text-white">
-                    <i class="fas fa-key"></i> Test RSA Signature
+                    <i class="fas fa-key"></i> Test RSA-PSS Signature
                 </div>
                 <div class="card-body">
                     <label for="rsa-text" class="form-label">Dữ liệu test:</label>
                     <input type="text" class="form-control mb-2" id="rsa-text" value="Hello World!">
                     <button class="btn btn-success w-100 mb-2" onclick="testRSA()">
-                        <i class="fas fa-pen-nib"></i> Test RSA
+                        <i class="fas fa-pen-nib"></i> Ký số RSA-PSS
                     </button>
                     <div id="rsa-result"></div>
-                </div>
-            </div>
-        </div>
-        <!-- Test SHA-256 Hash -->
-        <div class="col-md-4">
-            <div class="card border-warning">
-                <div class="card-header bg-warning text-dark">
-                    <i class="fas fa-hashtag"></i> Test SHA-256 Hash
-                </div>
-                <div class="card-body">
-                    <label for="sha-text" class="form-label">Dữ liệu test:</label>
-                    <input type="text" class="form-control mb-2" id="sha-text" value="Hello World!">
-                    <button class="btn btn-warning w-100 mb-2" onclick="testSHA()">
-                        <i class="fas fa-hashtag"></i> Test SHA-256
-                    </button>
-                    <div id="sha-result"></div>
                 </div>
             </div>
         </div>
@@ -57,11 +40,11 @@
 </div>
 
 <script>
-function testDES() {
-    const text = document.getElementById('des-text').value;
-    const resultDiv = document.getElementById('des-result');
+function testAES() {
+    const text = document.getElementById('aes-text').value;
+    const resultDiv = document.getElementById('aes-result');
     resultDiv.innerHTML = '<div class="text-info"><i class="fas fa-spinner fa-spin"></i> Đang test...</div>';
-    fetch('/api/test-des', {
+    fetch('/api/test-aes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text })
@@ -72,10 +55,11 @@ function testDES() {
             resultDiv.innerHTML = `
                 <div class="alert alert-success">
                     <b>Original:</b> ${data.original_text}<br>
-                    <b>Encrypted (Base64):</b> ${data.encrypted_data.cipher}<br>
-                    <b>IV (Base64):</b> ${data.encrypted_data.iv}<br>
+                    <b>Cipher + AuthTag (Base64):</b> <span style="word-break: break-all; font-size: 0.85em;">${data.encrypted_data.cipher}</span><br>
+                    <b>Nonce (Base64):</b> ${data.encrypted_data.nonce}<br>
                     <b>Decrypted:</b> ${data.decrypted_text}<br>
-                    <b>SHA-256 Hash:</b> ${data.hash}
+                    <hr>
+                    <small><i>Toàn vẹn dữ liệu được đảm bảo tự động bởi Auth Tag tích hợp trong AES-GCM.</i></small>
                 </div>
             `;
         } else {
@@ -102,37 +86,10 @@ function testRSA() {
             resultDiv.innerHTML = `
                 <div class="alert alert-success">
                     <b>Original:</b> ${data.original_message}<br>
-                    <b>Signature (Base64):</b> ${data.signature}<br>
                     <b>Signature Valid:</b> ${data.verification_result ? 'Yes' : 'No'}<br>
-                    <b>Tampered Verification:</b> ${data.tampered_verification ? 'Yes' : 'No'}
-                </div>
-            `;
-        } else {
-            resultDiv.innerHTML = `<div class="alert alert-danger"><b>Lỗi:</b> ${data.message}</div>`;
-        }
-    })
-    .catch(e => {
-        resultDiv.innerHTML = `<div class="alert alert-danger"><b>Lỗi:</b> ${e.message}</div>`;
-    });
-}
-
-function testSHA() {
-    const data = document.getElementById('sha-text').value;
-    const resultDiv = document.getElementById('sha-result');
-    resultDiv.innerHTML = '<div class="text-info"><i class="fas fa-spinner fa-spin"></i> Đang test...</div>';
-    fetch('/api/test-sha256', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data })
-    })
-    .then(res => res.json())
-    .then(data => {
-        if (data.success) {
-            resultDiv.innerHTML = `
-                <div class="alert alert-success">
-                    <b>Original:</b> ${data.original_data}<br>
-                    <b>SHA-256 Hash:</b> ${data.hash}<br>
-                    <b>Integrity Check:</b> ${data.integrity_check ? 'Yes' : 'No'}
+                    <b>Tampered Verification:</b> ${data.tampered_verification ? 'Yes' : 'No'}<br>
+                    <hr>
+                    <small><i>Sử dụng chuẩn Padding RSA-PSS an toàn hơn.</i></small>
                 </div>
             `;
         } else {
@@ -144,4 +101,4 @@ function testSHA() {
     });
 }
 </script>
-{% endblock %} 
+{% endblock %}

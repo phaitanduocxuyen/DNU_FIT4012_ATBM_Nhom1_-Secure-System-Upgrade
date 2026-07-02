@@ -93,6 +93,8 @@ function sendMessage() {
         const resultContent = document.getElementById("result-content");
         
         if (data.success) {
+            document.getElementById("message-form").reset();
+            document.getElementById("recipient").value = recipient;
             resultContent.className = "alert alert-success";
             resultContent.innerHTML = "<i class=\"fas fa-check-circle\"></i> " + data.message;
         } else {

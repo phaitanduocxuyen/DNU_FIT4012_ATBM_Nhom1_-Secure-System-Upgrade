@@ -15,6 +15,9 @@ class SecureMessageServer:
         self.clients = {}
         self.message_history = []  # Lưu toàn bộ lịch sử tin nhắn
         
+        # NÂNG CẤP: Bộ nhớ lưu trữ các ID tin nhắn đã xử lý để chặn Replay Attack
+        self.used_msg_ids = set() 
+        
     def log(self, message, type='info', details=None):
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         log_entry = {
@@ -132,27 +135,27 @@ class SecureMessageServer:
     def handle_auth(self, request, address):
         try:
             signed_info = request['signed_info']
-            encrypted_des_key = request['encrypted_des_key']
+            encrypted_aes_key = request['encrypted_aes_key'] # Đã đổi từ DES sang AES
             client_id = request['client_id']
             client_public_key_pem = request.get('client_public_key')
             
             # Xác thực chữ ký ID bằng public key của client
             if not self.crypto.verify_signature(client_id, signed_info, client_public_key_pem):
-                self.log(f"❌ Xác thực thất bại cho client {client_id}", 'error')
+                self.log(f"❌ Xác thực thất bại cho client {client_id}: Sai chữ ký ID", 'error')
                 return {'status': 'NACK', 'error': 'auth', 'message': 'Chữ ký ID không hợp lệ'}
                 
-            # Giải mã khóa DES
+            # NÂNG CẤP: Giải mã khóa AES phiên làm việc
             try:
-                self.crypto.decrypt_des_key(encrypted_des_key)
-                self.log(f"✅ Giải mã khóa DES thành công cho client {client_id}", 'success')
+                self.crypto.decrypt_session_key(encrypted_aes_key)
+                self.log(f"✅ Thiết lập khóa AES phiên làm việc thành công cho {client_id}", 'success')
             except Exception as e:
-                self.log(f"❌ Giải mã khóa DES thất bại: {e}", 'error')
-                return {'status': 'NACK', 'error': 'key', 'message': 'Không thể giải mã khóa DES'}
+                self.log(f"❌ Giải mã khóa AES thất bại: {e}", 'error')
+                return {'status': 'NACK', 'error': 'key', 'message': 'Không thể giải mã khóa phiên'}
                 
             # Lưu thông tin client
             self.clients[address] = {
                 'id': client_id,
-                'des_key': self.crypto.des_key if self.crypto.des_key else None,
+                'aes_key': self.crypto.aes_key if self.crypto.aes_key else None,
                 'client_public_key': client_public_key_pem
             }
             
@@ -166,46 +169,55 @@ class SecureMessageServer:
     def handle_message(self, request, address):
         try:
             cipher = request['cipher']
-            received_hash = request['hash']
+            aes_nonce = request['nonce']
+            msg_id = request['msg_id']
             signature = request['sig']
             recipient_id = request.get('recipient_id', 'Server')
             timestamp = request.get('timestamp', 0)
             
-            # Kiểm tra tính toàn vẹn bằng SHA-256
-            if not self.crypto.verify_integrity(cipher, received_hash):
-                self.log(f"❌ Hash không khớp từ client {address}", 'error')
-                return {'status': 'NACK', 'error': 'integrity', 'message': 'Hash không khớp'}
-                
-            # Xác thực chữ ký RSA bằng public key của client
+            # ---------------------------------------------------------
+            # NÂNG CẤP BẮT BUỘC: CHỐNG REPLAY ATTACK (TẤN CÔNG PHÁT LẠI)
+            # ---------------------------------------------------------
+            if msg_id in self.used_msg_ids:
+                self.log(f"🚨 CẢNH BÁO BẢO MẬT: Phát hiện tấn công phát lại (Replay Attack) từ {address}. ID tin nhắn trùng lặp!", 'warning')
+                return {'status': 'NACK', 'error': 'replay', 'message': 'Phát hiện Replay Attack: Gói tin đã được xử lý trước đó!'}
+            
+            # Nếu chưa từng xử lý, lưu ID này vào bộ nhớ
+            self.used_msg_ids.add(msg_id)
+            
+            # ---------------------------------------------------------
+            # NÂNG CẤP: XÁC THỰC CHỮ KÝ (Bảo vệ tính Xác thực)
+            # ---------------------------------------------------------
             client_public_key_pem = self.clients[address].get('client_public_key') if address in self.clients else None
-            if not self.crypto.verify_signature(cipher, signature, client_public_key_pem):
-                self.log(f"❌ Chữ ký không hợp lệ từ client {address}", 'error')
+            signature_payload = cipher + msg_id
+            
+            if not self.crypto.verify_signature(signature_payload, signature, client_public_key_pem):
+                self.log(f"🚨 CẢNH BÁO BẢO MẬT: Chữ ký không hợp lệ từ client {address}", 'error')
                 return {'status': 'NACK', 'error': 'auth', 'message': 'Chữ ký không hợp lệ'}
                 
-            # Giải mã tin nhắn (cần IV từ message_packet)
-            iv = request.get('iv')
-            if iv:
-                try:
-                    decrypted_message = self.crypto.decrypt_text_des(iv, cipher)
-                    self.log(f"✅ Tin nhắn hợp lệ từ client {address}: {decrypted_message}", 'success')
-                    # Lưu lại message vào lịch sử
-                    msg = {
-                        'decrypted_text': decrypted_message,
-                        'sender_id': self.clients[address]['id'],
-                        'timestamp': timestamp
-                    }
-                    self.message_history.append(msg)
-                    return {
-                        'status': 'ACK',
-                        'message': 'Tin nhắn đã được nhận và xác thực thành công',
-                        'timestamp': timestamp
-                    }
-                except Exception as e:
-                    self.log(f"❌ Lỗi giải mã tin nhắn: {e}", 'error')
-                    return {'status': 'NACK', 'error': 'decrypt', 'message': 'Không thể giải mã tin nhắn'}
-            else:
-                self.log(f"❌ Thiếu IV để giải mã tin nhắn", 'error')
-                return {'status': 'NACK', 'error': 'decrypt', 'message': 'Thiếu IV để giải mã'}
+            # ---------------------------------------------------------
+            # NÂNG CẤP: GIẢI MÃ VÀ KIỂM TRA TOÀN VẸN (AES-GCM)
+            # ---------------------------------------------------------
+            try:
+                decrypted_message = self.crypto.decrypt_text_aes_gcm(aes_nonce, cipher)
+                self.log(f"✅ Tin nhắn hợp lệ từ {address}: {decrypted_message}", 'success')
+                
+                # Lưu lại message vào lịch sử
+                msg = {
+                    'decrypted_text': decrypted_message,
+                    'sender_id': self.clients[address]['id'],
+                    'timestamp': timestamp
+                }
+                self.message_history.append(msg)
+                
+                return {
+                    'status': 'ACK',
+                    'message': 'Tin nhắn đã được nhận, giải mã và xác thực thành công',
+                    'timestamp': timestamp
+                }
+            except ValueError as ve:
+                self.log(f"🚨 CẢNH BÁO BẢO MẬT: Lỗi toàn vẹn dữ liệu từ {address}: {ve}", 'error')
+                return {'status': 'NACK', 'error': 'integrity', 'message': 'Dữ liệu đã bị can thiệp trên đường truyền (Lỗi Auth Tag)'}
                 
         except Exception as e:
             self.log(f"❌ Lỗi xử lý tin nhắn: {e}", 'error')
@@ -217,5 +229,4 @@ class SecureMessageServer:
             self.server_socket.close()
         self.log("🛑 Server đã được dừng", 'info')
 
-# Alias để tương thích với code cũ
-SpotifyCloudServer = SecureMessageServer 
+SpotifyCloudServer = SecureMessageServer

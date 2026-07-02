@@ -2,6 +2,7 @@ import socket
 import json
 import os
 import time
+import uuid
 from crypto_utils import CryptoManager
 
 class SecureMessageClient:
@@ -37,28 +38,27 @@ class SecureMessageClient:
             return False
             
     def send_message(self, message, recipient_id="Server"):
-        """Gửi tin nhắn văn bản được mã hóa"""
+        """Gửi tin nhắn văn bản được mã hóa (Bảo vệ chống Replay Attack)"""
         try:
             if not self.socket:
                 return {'status': 'error', 'message': 'Chưa kết nối đến server'}
                 
-            # Tạo khóa DES và mã hóa nó bằng RSA công khai của người nhận
-            self.crypto.generate_des_key()
-            encrypted_des_key = self.crypto.encrypt_des_key(self.server_public_key)
+            # NÂNG CẤP: Tạo khóa AES-256 qua HKDF và mã hóa bằng RSA-OAEP
+            self.crypto.generate_aes_key()
+            encrypted_session_key = self.crypto.encrypt_session_key(self.server_public_key)
             
-            # Ký ID bằng RSA/SHA-256
+            # Ký ID bằng RSA-PSS
             signed_info = self.crypto.sign_message(self.client_id)
             
-            # Gửi thông tin xác thực và khóa DES
+            # Gửi thông tin xác thực và khóa phiên
             auth_packet = {
                 'type': 'auth',
                 'signed_info': signed_info,
-                'encrypted_des_key': encrypted_des_key,
+                'encrypted_aes_key': encrypted_session_key,
                 'client_id': self.client_id,
                 'client_public_key': self.crypto.get_public_key_pem()
             }
             
-            # Gửi auth packet
             auth_data = json.dumps(auth_packet).encode()
             size = str(len(auth_data)).zfill(8)
             self.socket.send(size.encode())
@@ -81,17 +81,23 @@ class SecureMessageClient:
             if auth_response.get('status') != 'ACK':
                 return {'status': 'error', 'message': 'Xác thực thất bại: ' + auth_response.get('message', '')}
             
-            # Mã hóa tin nhắn bằng DES và tạo hash SHA-256
-            encrypted_message = self.crypto.encrypt_text_des(message)
+            # NÂNG CẤP: Mã hóa AES-GCM và sinh msg_id (chống Replay Attack)
+            msg_id = str(uuid.uuid4()) # Sinh ID duy nhất cho tin nhắn
+            encrypted_message = self.crypto.encrypt_text_aes_gcm(message)
+            
+            # NÂNG CẤP: Ký (cipher + msg_id) để đảm bảo không ai tráo đổi được dữ liệu
+            signature_payload = encrypted_message['cipher'] + msg_id
+            
             message_packet = {
                 'type': 'message',
                 'cipher': encrypted_message['cipher'],
-                'iv': encrypted_message['iv'],
-                'hash': self.crypto.calculate_sha256_hash(encrypted_message['cipher']),
-                'sig': self.crypto.sign_message(encrypted_message['cipher']),
+                'nonce': encrypted_message['nonce'], # Nonce của thuật toán AES-GCM
+                'msg_id': msg_id,                    # ID ở tầng ứng dụng chống Replay
+                'sig': self.crypto.sign_message(signature_payload), # Ký số RSA-PSS
                 'recipient_id': recipient_id,
                 'timestamp': int(time.time())
             }
+            # Ghi chú: Đã bỏ trường 'hash' (SHA-256) vì AES-GCM tự đảm bảo toàn vẹn
             
             # Gửi tin nhắn
             message_data = json.dumps(message_packet).encode()
@@ -113,7 +119,6 @@ class SecureMessageClient:
                 response_bytes += chunk
                 
             response = json.loads(response_bytes.decode())
-            
             return response
             
         except Exception as e:
@@ -145,7 +150,6 @@ class SecureMessageClient:
             message_data = json.loads(data.decode())
             
             if message_data.get('type') == 'message':
-                # Xử lý tin nhắn đến
                 return self.handle_incoming_message(message_data)
             else:
                 return {'status': 'error', 'message': 'Loại dữ liệu không được hỗ trợ'}
@@ -157,29 +161,27 @@ class SecureMessageClient:
         """Xử lý tin nhắn đến"""
         try:
             cipher = message_data['cipher']
-            received_hash = message_data['hash']
+            aes_nonce = message_data['nonce']
+            msg_id = message_data['msg_id']
             signature = message_data['sig']
             
-            # Kiểm tra tính toàn vẹn bằng SHA-256
-            if not self.crypto.verify_integrity(cipher, received_hash):
-                return {'status': 'NACK', 'error': 'integrity', 'message': 'Hash không khớp'}
+            # NÂNG CẤP: Xác thực chữ ký RSA-PSS (kết hợp cipher + msg_id)
+            signature_payload = cipher + msg_id
+            if not self.crypto.verify_signature(signature_payload, signature, self.server_public_key):
+                return {'status': 'NACK', 'error': 'auth', 'message': 'Chữ ký không hợp lệ (Sai chữ ký)'}
                 
-            # Xác thực chữ ký RSA
-            if not self.crypto.verify_signature(cipher, signature, self.server_public_key):
-                return {'status': 'NACK', 'error': 'auth', 'message': 'Chữ ký không hợp lệ'}
-                
-            # Giải mã tin nhắn (cần IV từ metadata)
-            # Trong thực tế, IV sẽ được gửi cùng với tin nhắn
-            if 'iv' in message_data:
-                decrypted_message = self.crypto.decrypt_text_des(message_data['iv'], cipher)
+            # NÂNG CẤP: Giải mã bằng AES-GCM (tự động check toàn vẹn)
+            try:
+                decrypted_message = self.crypto.decrypt_text_aes_gcm(aes_nonce, cipher)
                 return {
                     'status': 'ACK',
                     'message': 'Tin nhắn hợp lệ',
                     'decrypted_text': decrypted_message,
                     'sender_id': message_data.get('sender_id', 'Unknown')
                 }
-            else:
-                return {'status': 'NACK', 'error': 'decrypt', 'message': 'Thiếu IV để giải mã'}
+            except ValueError as ve:
+                # Bắt lỗi InvalidTag từ AES-GCM (Tương đương lỗi Hash không khớp cũ)
+                return {'status': 'NACK', 'error': 'integrity', 'message': str(ve)}
                 
         except Exception as e:
             return {'status': 'NACK', 'error': 'decrypt', 'message': str(e)}
@@ -198,14 +200,8 @@ if __name__ == "__main__":
     client = SpotifyClient()
     
     if client.connect():
-        # Test send message
         print("\n=== Test Send Message ===")
         result = client.send_message("Hello, this is a test message!")
         print(f"Send message result: {result}")
-        
-        # Test receive message
-        print("\n=== Test Receive Message ===")
-        result = client.receive_message()
-        print(f"Receive message result: {result}")
         
         client.disconnect()

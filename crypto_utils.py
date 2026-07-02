@@ -1,15 +1,14 @@
 import os
-import hashlib
 import base64
-import json
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.backends import default_backend
 
 class CryptoManager:
     def __init__(self):
-        self.des_key = None
+        self.aes_key = None
         self.private_key = None
         self.public_key = None
         self.generate_rsa_keys()
@@ -23,19 +22,24 @@ class CryptoManager:
         )
         self.public_key = self.private_key.public_key()
         
-    def generate_des_key(self):
-        """Tạo khóa DES 64-bit hoặc TripleDES nếu DES không có"""
-        from cryptography.hazmat.primitives.ciphers import algorithms
-        if hasattr(algorithms, 'DES'):
-            self.des_key = os.urandom(8)  # 64-bit key cho DES
-            self._use_triple_des = False
-        else:
-            self.des_key = os.urandom(24)  # 192-bit key cho TripleDES
-            self._use_triple_des = True
-        return self.des_key
+    def generate_aes_key(self):
+        """
+        NÂNG CẤP: Dùng HKDF để dẫn xuất khóa AES-256 (32 bytes) an toàn.
+        Không dùng trực tiếp os.urandom làm khóa phiên như hệ thống cũ.
+        """
+        raw_key_material = os.urandom(32)
+        hkdf = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=None,
+            info=b'secure_messaging_handshake',
+            backend=default_backend()
+        )
+        self.aes_key = hkdf.derive(raw_key_material)
+        return self.aes_key
         
-    def encrypt_des_key(self, public_key_pem=None):
-        """Mã hóa khóa DES bằng RSA với OAEP + SHA-256"""
+    def encrypt_session_key(self, public_key_pem=None):
+        """Mã hóa khóa AES bằng RSA với OAEP + SHA-256"""
         if public_key_pem:
             public_key = serialization.load_pem_public_key(
                 public_key_pem.encode()
@@ -44,7 +48,7 @@ class CryptoManager:
             public_key = self.public_key
             
         encrypted_key = public_key.encrypt(
-            self.des_key,
+            self.aes_key,
             padding.OAEP(
                 mgf=padding.MGF1(algorithm=hashes.SHA256()),
                 algorithm=hashes.SHA256(),
@@ -53,10 +57,10 @@ class CryptoManager:
         )
         return base64.b64encode(encrypted_key).decode()
         
-    def decrypt_des_key(self, encrypted_key_b64):
-        """Giải mã khóa DES bằng RSA với OAEP + SHA-256"""
+    def decrypt_session_key(self, encrypted_key_b64):
+        """Giải mã khóa AES bằng RSA với OAEP + SHA-256"""
         encrypted_key = base64.b64decode(encrypted_key_b64)
-        self.des_key = self.private_key.decrypt(
+        self.aes_key = self.private_key.decrypt(
             encrypted_key,
             padding.OAEP(
                 mgf=padding.MGF1(algorithm=hashes.SHA256()),
@@ -64,68 +68,67 @@ class CryptoManager:
                 label=None
             )
         )
-        return self.des_key
+        return self.aes_key
         
-    def encrypt_text_des(self, text):
-        """Mã hóa văn bản bằng DES (CFB mode) hoặc TripleDES nếu không có DES"""
-        from cryptography.hazmat.primitives.ciphers import algorithms
-        if not self.des_key:
-            self.generate_des_key()
-        iv = os.urandom(8)
-        if hasattr(algorithms, 'DES') and not getattr(self, '_use_triple_des', False):
-            alg = algorithms.DES(self.des_key)
-        else:
-            alg = algorithms.TripleDES(self.des_key)
-        cipher = Cipher(
-            alg,
-            modes.CFB(iv),
-            backend=default_backend()
-        )
-        encryptor = cipher.encryptor()
+    def encrypt_text_aes_gcm(self, text, additional_data=None):
+        """
+        NÂNG CẤP: Mã hóa bằng AES-256-GCM.
+        Thuật toán này tích hợp mã hóa và xác thực toàn vẹn (tạo Auth Tag),
+        nên không cần dùng hàm hash SHA-256 riêng lẻ nữa.
+        """
+        if not self.aes_key:
+            self.generate_aes_key()
+            
+        aesgcm = AESGCM(self.aes_key)
+        # GCM khuyến nghị kích thước nonce là 12 bytes
+        nonce = os.urandom(12) 
         text_bytes = text.encode('utf-8')
-        ciphertext = encryptor.update(text_bytes) + encryptor.finalize()
+        
+        # Ciphertext sinh ra từ AES-GCM đã bao gồm cả Authentication Tag ở cuối
+        ciphertext = aesgcm.encrypt(nonce, text_bytes, additional_data)
+        
         return {
-            'iv': base64.b64encode(iv).decode(),
+            'nonce': base64.b64encode(nonce).decode(),
             'cipher': base64.b64encode(ciphertext).decode()
         }
         
-    def decrypt_text_des(self, iv_b64, cipher_b64):
-        """Giải mã văn bản bằng DES (CFB mode) hoặc TripleDES nếu không có DES"""
-        from cryptography.hazmat.primitives.ciphers import algorithms
-        if not self.des_key:
-            raise ValueError("DES key not available")
-        iv = base64.b64decode(iv_b64)
+    def decrypt_text_aes_gcm(self, nonce_b64, cipher_b64, additional_data=None):
+        """
+        Giải mã văn bản bằng AES-256-GCM.
+        Sẽ tự động throw lỗi nếu dữ liệu (cipher) bị can thiệp trên đường truyền.
+        """
+        if not self.aes_key:
+            raise ValueError("Chưa thiết lập khóa AES (AES key not available)")
+            
+        nonce = base64.b64decode(nonce_b64)
         ciphertext = base64.b64decode(cipher_b64)
-        if hasattr(algorithms, 'DES') and not getattr(self, '_use_triple_des', False):
-            alg = algorithms.DES(self.des_key)
-        else:
-            alg = algorithms.TripleDES(self.des_key)
-        cipher = Cipher(
-            alg,
-            modes.CFB(iv),
-            backend=default_backend()
-        )
-        decryptor = cipher.decryptor()
-        plaintext = decryptor.update(ciphertext) + decryptor.finalize()
-        return plaintext.decode('utf-8')
         
-    def calculate_sha256_hash(self, ciphertext_b64):
-        """Tính SHA-256 hash của ciphertext"""
-        ciphertext = base64.b64decode(ciphertext_b64)
-        return hashlib.sha256(ciphertext).hexdigest()
-        
+        aesgcm = AESGCM(self.aes_key)
+        try:
+            plaintext = aesgcm.decrypt(nonce, ciphertext, additional_data)
+            return plaintext.decode('utf-8')
+        except Exception:
+            # Bắt lỗi InvalidTag exception từ thư viện cryptography
+            raise ValueError("Dữ liệu đã bị thay đổi hoặc khóa không hợp lệ (Lỗi toàn vẹn/Authentication Tag)")
+            
     def sign_message(self, message):
-        """Ký tin nhắn bằng RSA/SHA-256"""
+        """
+        NÂNG CẤP: Ký tin nhắn bằng RSA-PSS thay vì PKCS1v15 cũ.
+        PSS cung cấp mức độ bảo mật cao hơn chống lại các tấn công trên chữ ký.
+        """
         message_bytes = message.encode('utf-8')
         signature = self.private_key.sign(
             message_bytes,
-            padding.PKCS1v15(),
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.MAX_LENGTH
+            ),
             hashes.SHA256()
         )
         return base64.b64encode(signature).decode()
         
     def verify_signature(self, message, signature_b64, public_key_pem=None):
-        """Xác thực chữ ký RSA/SHA-256"""
+        """Xác thực chữ ký RSA-PSS"""
         if public_key_pem:
             public_key = serialization.load_pem_public_key(
                 public_key_pem.encode()
@@ -140,7 +143,10 @@ class CryptoManager:
             public_key.verify(
                 signature,
                 message_bytes,
-                padding.PKCS1v15(),
+                padding.PSS(
+                    mgf=padding.MGF1(hashes.SHA256()),
+                    salt_length=padding.PSS.MAX_LENGTH
+                ),
                 hashes.SHA256()
             )
             return True
@@ -153,42 +159,3 @@ class CryptoManager:
             encoding=serialization.Encoding.PEM,
             format=serialization.PublicFormat.SubjectPublicKeyInfo
         ).decode()
-        
-    def verify_integrity(self, ciphertext_b64, received_hash):
-        """Kiểm tra tính toàn vẹn bằng SHA-256"""
-        calculated_hash = self.calculate_sha256_hash(ciphertext_b64)
-        return calculated_hash == received_hash
-
-    def encrypt_message(self, text):
-        """Mã hóa tin nhắn hoàn chỉnh với DES và tạo hash"""
-        encrypted_data = self.encrypt_text_des(text)
-        message_hash = self.calculate_sha256_hash(encrypted_data['cipher'])
-        signature = self.sign_message(encrypted_data['cipher'])
-        
-        return {
-            'cipher': encrypted_data['cipher'],
-            'hash': message_hash,
-            'sig': signature
-        }
-
-    def decrypt_message(self, encrypted_data):
-        """Giải mã tin nhắn và kiểm tra tính toàn vẹn"""
-        cipher = encrypted_data['cipher']
-        received_hash = encrypted_data['hash']
-        signature = encrypted_data['sig']
-        
-        # Kiểm tra hash
-        if not self.verify_integrity(cipher, received_hash):
-            raise ValueError("Hash verification failed")
-            
-        # Xác thực chữ ký
-        if not self.verify_signature(cipher, signature):
-            raise ValueError("Signature verification failed")
-            
-        # Giải mã (cần IV từ handshake hoặc metadata)
-        # Trong thực tế, IV sẽ được gửi cùng với ciphertext
-        # Ở đây chúng ta giả định IV đã được lưu trữ
-        if hasattr(self, 'current_iv'):
-            return self.decrypt_text_des(self.current_iv, cipher)
-        else:
-            raise ValueError("IV not available for decryption")
