@@ -14,14 +14,17 @@
 
 
 ## 🎯 Giới thiệu bài toán
-Một hệ thống bảo mật cho ứng dụng nhắn tin văn bản, nơi nội dung tin nhắn được mã hóa bằng **DES** để đảm bảo bí mật, trong khi danh tính người gửi và người nhận được xác thực bằng **RSA**. Hệ thống sử dụng hàm băm **SHA-256** để kiểm tra tính toàn vẹn của thông điệp.
+Dự án không chỉ dừng lại ở việc cài đặt các thuật toán mật mã cơ bản, mà tập trung vào Secure System Upgrade Challenge – nâng cấp hệ thống hiện có để đạt chuẩn bảo mật thực tế. Cụ thể, chúng tôi đã thay thế hoàn toàn chuẩn DES lỗi thời bằng **AES-256-GCM** để đảm bảo đồng thời tính bí mật và xác thực dữ liệu. Hệ thống còn được gia cố bằng chữ ký số **RSA-PSS** an toàn hơn và triển khai cơ chế chống Replay Attack bằng định danh msg_id (UUID), chặn đứng hành vi phát lại các gói tin cũ.
 
 ## 🔒 Tính năng Bảo mật
 
-- **Mã hóa**: DES (CFB mode) - 64-bit key
-- **Trao khóa & ký số**: RSA 2048-bit (OAEP + SHA-256)
-- **Kiểm tra tính toàn vẹn**: SHA-256
-- **Handshake**: Xác thực P2P qua Socket TCP
+- **Mã hóa AES-256-GCM**: Sử dụng chuẩn mã hóa có xác thực (AEAD) thay thế DES, đảm bảo đồng thời tính bí mật và toàn vẹn của dữ liệu.
+
+- **Chữ ký số RSA-PSS**: Nâng cấp lên chuẩn RSA-PSS an toàn hơn, giúp xác thực danh tính người gửi và chống giả mạo chữ ký.
+
+- **Chống Replay Attack**: Triển khai định danh tin nhắn (msg_id) kết hợp bộ lọc tại Server để chặn đứng việc gửi lại các gói tin cũ.
+
+- **Công cụ kiểm thử tự động**: Tích hợp bộ giả lập tấn công (Replay & Tampering) ngay trên UI để xác thực cơ chế phòng thủ của hệ thống.
 
 ## 📂 Cấu trúc Thư mục
 ```
@@ -31,7 +34,9 @@ btlN/
 ├── crypto_utils.py        # Thư viện mã hóa (DES, RSA, SHA-256)
 ├── socket_client.py       # Client socket để gửi tin nhắn
 ├── socket_server.py       # Server socket để nhận tin nhắn
-├── run_both.py           # Script chạy cả client và server
+├── run_both.py           # Script chạy 
+cả client và server
+├── test_secyrity.py      # test giả tấn công
 ├── requirements.txt      # Dependencies
 ├── templates/            # HTML templates
 │   ├── client_base.html
@@ -100,43 +105,46 @@ btlN/
 
 4. Kiểm tra bảo mật:
 
-- Vào trang "Bảo mật" tại http://localhost:5000 để test các thuật toán mã hóa (DES, RSA, SHA-256).
+- Vào trang "Bảo mật" tại http://localhost:5000 để test các thuật toán mã hóa ( AES-256-GCM, chữ ký số).
+
 
 
 
 ## ✨ Các Chức Năng Của Bài
 
-### 1. Gửi và Nhận Tin Nhắn An Toàn:
+### 1. Gửi và Nhận Tin Nhắn An Toàn (Nâng cấp với AES-256-GCM):
 
-- Người dùng có thể gửi tin nhắn được mã hóa bằng DES và xác thực bằng RSA/SHA-256 thông qua giao diện web.
-- Tin nhắn được giải mã và hiển thị tại trang "Nhận tin nhắn" với thông tin về người gửi và thời gian.
-
-
- ### 2. Xác Thực và Trao Đổi Khóa:
-
-- Hỗ trợ handshake P2P để xác thực giữa client và server.
-- Trao đổi khóa DES mã hóa bằng RSA công khai để đảm bảo an toàn trong quá trình truyền tải.
+- Nội dung tin nhắn được bảo mật bằng chuẩn AES-256-GCM (thay thế cho DES), cung cấp khả năng mã hóa có xác thực (AEAD) để đảm bảo đồng thời tính bí mật và toàn vẹn dữ liệu.
+- Tin nhắn được giải mã và hiển thị an toàn tại trang "Nhận tin nhắn" sau khi xác thực thành công.
 
 
- ### 3. Kiểm Tra Tính Toàn Vẹn:
+ ### 2. Xác Thực và Trao Đổi Khóa (Chuẩn RSA-PSS):
 
-- Sử dụng SHA-256 để tạo hash và kiểm tra tính toàn vẹn của tin nhắn, phát hiện bất kỳ sửa đổi nào trong quá trình truyền.
-
-
-### 4. Kiểm Thử Thuật Toán Mã Hóa:
-
-- Cung cấp các API để test mã hóa DES, chữ ký RSA, và hash SHA-256 với dữ liệu mẫu, giúp người dùng đánh giá hiệu quả bảo mật.
+- Hỗ trợ handshake P2P giữa Client và Server để thiết lập phiên làm việc an toàn.
+- Khóa phiên (Session Key) được bảo vệ bằng chuẩn ký số RSA-PSS (nâng cấp từ RSA PKCS#1 v1.5), đảm bảo an toàn tuyệt đối trong quá trình trao đổi khóa.
 
 
-### 5. Quản Lý Server:
+ ### 3. Kiểm Tra Tính Toàn Vẹn & Chống Replay Attack:
 
-- Cho phép khởi động, dừng, và kiểm tra trạng thái server thông qua giao diện web hoặc API.
-- Hiển thị danh sách client kết nối và lịch sử tin nhắn trên server.
+- Loại bỏ hàm băm SHA-256 thuần túy, thay thế bằng cơ chế Authentication Tag tích hợp trong AES-GCM để tự động phát hiện mọi can thiệp (Tampering).
+- Triển khai định danh tin nhắn duy nhất (msg_id) và danh sách lưu vết nonce tại Server để chặn đứng hoàn toàn các cuộc tấn công phát lại (Replay Attack).
 
 
-### 6. Ghi Nhận Log:
+### 4. Kiểm Thử Bảo Mật Tự Động (Security Tester):
+- Tích hợp bộ công cụ kiểm thử tự động ngay trên giao diện Web (Security UI).
+- Cho phép giả lập các kịch bản tấn công (Tampering & Replay) để kiểm chứng khả năng phòng thủ của hệ thống với kết quả hiển thị trực quan (PASSED/FAILED).
 
-- Ghi lại các hoạt động quan trọng như kết nối, lỗi, và xử lý tin nhắn trong log server để hỗ trợ gỡ lỗi và theo dõi.
+
+### 5. Quản Lý Server & Giám Sát:
+
+- Điều khiển server (khởi động/dừng) và theo dõi trạng thái kết nối thời gian thực qua Web API.
+- Hiển thị danh sách Client và lịch sử giao tiếp trên Server với dữ liệu đã được lọc an toàn.
+
+
+### 6. Ghi Nhận Log Bảo Mật:
+
+- Hệ thống ghi log chi tiết các sự kiện quan trọng (Handshake, xác thực, tấn công).
+- Cải tiến định dạng log giúp gỡ lỗi nhanh chóng mà vẫn đảm bảo an toàn, tuyệt đối không lưu khóa bí mật hoặc dữ liệu thô nhạy cảm.
 
 
 
@@ -165,18 +173,21 @@ btlN/
 
 ## 🔐 Bảo mật
 
- - ✅DES Encryption: Sử dụng CFB mode với IV ngẫu nhiên
- - ✅RSA Key Exchange: 2048-bit keys với OAEP padding
- - ✅Digital Signatures: RSA/SHA-256 cho xác thực
- - ✅Integrity Check: SHA-256 hash để phát hiện tampering
- - ✅Secure Handshake: Xác thực hai chiều qua Socket TCP
+ - ✅ AES-256-GCM Encryption: Sử dụng chuẩn mã hóa có xác thực (AEAD) thay thế cho DES, cung cấp tính bảo mật cao và tự động kiểm tra tính toàn vẹn dữ liệu thông qua Auth Tag.
+ - ✅ RSA-PSS 2048-bit: Sử dụng chuẩn ký số RSA-PSS hiện đại (nâng cấp từ PKCS#1 v1.5) để xác thực danh tính và trao đổi khóa phiên (Session Key) an toàn.
+ - ✅ Anti-Replay Protection: Cơ chế định danh tin nhắn (msg_id) kết hợp lưu vết nonce tại Server giúp loại bỏ hoàn toàn nguy cơ bị tấn công phát lại (Replay Attack).
+ - ✅ Integrity & Tampering Detection: Tích hợp xác thực dữ liệu ngay trong quá trình giải mã, giúp hệ thống phát hiện tức thời mọi hành vi can thiệp (Tampering) vào gói tin trên đường truyền.
+ - ✅ Secure Handshake: Xác thực phiên làm việc hai chiều qua Socket TCP, sử dụng khóa dẫn xuất từ HKDF để đảm bảo khóa phiên không bao giờ lộ ra ngoài dưới dạng thô.
 
 ## ⚠️ Lưu ý
 
-  - ❌ Đây là ứng dụng demo cho mục đích học tập.
-  - ❌ Trong môi trường production, nên sử dụng các thuật toán mã hóa hiện đại hơn như AES.
-  - ❌ DES được sử dụng theo yêu cầu đề bài, nhưng không được khuyến nghị trong thực tế.
-  - ❌ Đảm bảo server được khởi động trước khi client gửi tin nhắn.
+- ❌ Đây là ứng dụng demo phục vụ mục đích học tập và nghiên cứu.
+
+-   ❌ Các thuật toán đã được nâng cấp lên chuẩn hiện đại (AES-256-GCM, RSA-PSS).
+
+- ❌ Khuyến nghị sử dụng các giải pháp bảo mật chuyên dụng trong môi trường thực tế.
+
+- ❌ Đảm bảo Server luôn ở trạng thái sẵn sàng trước khi Client thực hiện kết nối.
 
 ## 🖥️ Giao diện và hoạt động
 
@@ -203,4 +214,4 @@ btlN/
 4. **Trang bảo mật**
   <img src="images/trangBM.png" alt="Main App Interface" width="800">
 
-  © 2025 NHÓM 6, CNTT16-04, TRƯỜNG ĐẠI HỌC ĐẠI NAM
+  © 2026 NHÓM 1, CNTT18-02, TRƯỜNG ĐẠI HỌC ĐẠI NAM
